@@ -1,0 +1,47 @@
+version: '3.7'
+
+services:
+#  app:
+#    restart: always
+#    build: .
+#    image: chatgpt-tg
+#    entrypoint: python main.py
+##    entrypoint: sh -c 'while true; do echo "working..."; sleep 60; done'
+#    volumes:
+#      - ./:/usr/src/app/
+#    depends_on:
+#      - postgres
+
+  postgres:
+    image: postgres:15.3
+    ports:
+      - "5432:5432"
+#    entrypoint: [ "/docker-entrypoint-initdb.d/entrypoint.sh" ]
+#    volumes:
+#      - ./migrations/sql:/docker-entrypoint-initdb.d/migrations-1
+#      - ./migrations/pg_init.sh:/docker-entrypoint-initdb.d/pg_init.sh
+#      - ./migrations/entrypoint.sh:/docker-entrypoint-initdb.d/entrypoint.sh
+#      - ./migrations/wait-for-it.sh:/docker-entrypoint-initdb.d/wait-for-it.sh
+#      - db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: obsidianecho
+
+  pgweb:
+    restart: always
+    image: sosedoff/pgweb
+    ports:
+      - "8081:8081"
+    links:
+      - postgres:postgres
+    environment:
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/obsidianecho?sslmode=disable
+      - PGWEB_AUTH_USER=admin
+      - PGWEB_AUTH_PASS=password
+    depends_on:
+      - postgres
+
+volumes:
+    db:
+      driver: local
