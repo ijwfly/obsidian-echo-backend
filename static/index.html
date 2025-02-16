@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Vue API Client</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 20px;
+      }
+      h2 {
+        margin-top: 30px;
+      }
+      form {
+        display: flex;
+        flex-direction: column;
+        max-width: 300px;
+      }
+      input {
+        margin-bottom: 10px;
+        padding: 5px;
+      }
+      button {
+        padding: 10px;
+        cursor: pointer;
+      }
+      .error {
+        color: red;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div v-if="!isAuthenticated">
+        <h2>Регистрация</h2>
+        <form @submit.prevent="register">
+          <input type="text" v-model="reg.username" placeholder="Username" required>
+          <input type="email" v-model="reg.email" placeholder="Email" required>
+          <input type="password" v-model="reg.password" placeholder="Password" required>
+          <button type="submit">Зарегистрироваться</button>
+        </form>
+        <p class="error">{{ regError }}</p>
+
+        <h2>Авторизация</h2>
+        <form @submit.prevent="login">
+          <input type="text" v-model="loginData.username" placeholder="Username" required>
+          <input type="password" v-model="loginData.password" placeholder="Password" required>
+          <button type="submit">Войти</button>
+        </form>
+        <p class="error">{{ loginError }}</p>
+      </div>
+
+      <div v-if="isAuthenticated">
+        <h2>Создание Vault</h2>
+        <form @submit.prevent="createVault">
+          <input type="text" v-model="newVault.name" placeholder="Vault Name" required>
+          <button type="submit">Создать Vault</button>
+        </form>
+        <p class="error">{{ vaultError }}</p>
+        <div v-if="vault">
+          <h3>Vault токен</h3>
+          <p>{{ vault.token }}</p>
+        </div>
+        <button @click="logout">Выйти</button>
+      </div>
+    </div>
+
+    <script>
+      new Vue({
+        el: '#app',
+        data: {
+          reg: { username: '', email: '', password: '' },
+          loginData: { username: '', password: '' },
+          isAuthenticated: false,
+          accessToken: null,
+          newVault: { name: '' },
+          vault: null,
+          regError: '',
+          loginError: '',
+          vaultError: ''
+        },
+        methods: {
+          async register() {
+            try {
+              this.regError = '';
+              const response = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.reg)
+              });
+              if (!response.ok) {
+                throw new Error('Registration failed');
+              }
+              alert('Регистрация прошла успешно. Теперь выполните вход.');
+            } catch (error) {
+              this.regError = error.message;
+            }
+          },
+          async login() {
+            try {
+              this.loginError = '';
+              const params = new URLSearchParams();
+              params.append('username', this.loginData.username);
+              params.append('password', this.loginData.password);
+              const response = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params
+              });
+              if (!response.ok) {
+                throw new Error('Ошибка входа');
+              }
+              const data = await response.json();
+              this.accessToken = data.access_token;
+              this.isAuthenticated = true;
+              localStorage.setItem('accessToken', this.accessToken);
+            } catch (error) {
+              this.loginError = error.message;
+            }
+          },
+          async createVault() {
+            try {
+              this.vaultError = '';
+              const response = await fetch('/api/vaults', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + this.accessToken
+                },
+                body: JSON.stringify(this.newVault)
+              });
+              if (!response.ok) {
+                throw new Error('Ошибка создания Vault');
+              }
+              this.vault = await response.json();
+            } catch (error) {
+              this.vaultError = error.message;
+            }
+          },
+          logout() {
+            this.isAuthenticated = false;
+            this.accessToken = null;
+            this.vault = null;
+            localStorage.removeItem('accessToken');
+          }
+        },
+        created() {
+          this.accessToken = localStorage.getItem('accessToken');
+          this.isAuthenticated = !!this.accessToken;
+        }
+      });
+    </script>
+  </body>
+</html>
