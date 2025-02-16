@@ -1,7 +1,10 @@
+import logging
 import asyncpg
 from typing import Optional, List
 from uuid import UUID
 from app.models import User, Vault, Note
+
+logger = logging.getLogger(__name__)
 
 
 class Database:
@@ -11,12 +14,12 @@ class Database:
 
     async def connect(self):
         self.pool = await asyncpg.create_pool(dsn=self.dsn)
-        print("Connected to database.")
+        logger.info("Connected to database.")
 
     async def close(self):
         if self.pool:
             await self.pool.close()
-            print("Database connection closed.")
+            logger.info("Database connection closed.")
 
     async def create_user(self, user: User) -> User:
         async with self.pool.acquire() as conn:
@@ -72,19 +75,6 @@ class Database:
             )
             return Note(**row)
 
-    async def get_pending_notes(self, vault_id: UUID, limit: int = 10, offset: int = 0) -> List[Note]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM notes
-                WHERE vault_id = $1 AND state = 'PENDING'
-                ORDER BY created_at ASC
-                LIMIT $2 OFFSET $3
-                """,
-                str(vault_id), limit, offset
-            )
-            return [Note(**dict(row)) for row in rows]
-
     async def claim_note(self, note_id: UUID, client_id: str) -> Optional[Note]:
         """
         Try too claim a note. If the note is in 'PENDING' state, change it to 'CLAIMED',
@@ -110,7 +100,7 @@ class Database:
 
     async def download_note(self, note_id: UUID) -> Optional[Note]:
         """
-        Get note for download. If the note is in 'CLAIMED' state, return it.
+        Get note for download.
         """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM notes WHERE id = $1", str(note_id))
@@ -135,3 +125,46 @@ class Database:
             if row:
                 return Note(**row)
             return None
+
+    async def get_vaults_by_user(self, user_id: UUID) -> List[Vault]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM vaults WHERE user_id = $1", str(user_id))
+            return [Vault(**row) for row in rows]
+
+    async def get_user_vault(self, vault_id: UUID, user_id: UUID) -> Optional[Vault]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM vaults WHERE id = $1 AND user_id = $2", str(vault_id), str(user_id))
+            if row:
+                return Vault(**row)
+            return None
+
+    async def update_vault(self, vault_id: UUID, name: str, user_id: UUID) -> Optional[Vault]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE vaults SET name = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *",
+                name, str(vault_id), str(user_id)
+            )
+            if row:
+                return Vault(**row)
+            return None
+
+    async def delete_vault(self, vault_id: UUID, user_id: UUID) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM vaults WHERE id = $1 AND user_id = $2", str(vault_id), str(user_id))
+            return result.split()[-1] != "0"
+
+    async def get_notes_by_vault(self, vault_id: UUID, limit: int = 10, offset: int = 0) -> List[Note]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM notes WHERE vault_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3",
+                str(vault_id), limit, offset
+            )
+            return [Note(**dict(row)) for row in rows]
+
+    async def get_notes_by_state(self, vault_id: UUID, state: str, limit: int = 10, offset: int = 0) -> List[Note]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM notes WHERE vault_id = $1 AND state = $2 ORDER BY created_at ASC LIMIT $3 OFFSET $4",
+                str(vault_id), state, limit, offset
+            )
+            return [Note(**dict(row)) for row in rows]

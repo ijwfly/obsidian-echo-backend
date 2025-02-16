@@ -1,22 +1,18 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional, List
 from uuid import UUID, uuid4
-from datetime import datetime, timedelta
-import jwt
+from datetime import datetime
+from app.security import hash_password, verify_password, create_access_token, decode_access_token
 
 from app.models import User, Vault, Note, NoteState
 from app.db import Database
 from settings import get_postgres_dsn
 
-SECRET_KEY = "your-secret-key"  # TODO: move to settings, generate random secret on first project init
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30  # TODO: make JWT tokens for secure api usage
-
-app = FastAPI()
 db = Database(dsn=get_postgres_dsn())
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
 
@@ -49,7 +45,7 @@ class VaultResponse(BaseModel):
 
 class NoteCreate(BaseModel):
     external_id: Optional[str] = None
-    title: Optional[str] = None
+    title: str
     content: str
 
 class NoteResponse(BaseModel):
@@ -65,28 +61,15 @@ class NoteResponse(BaseModel):
     updated_at: datetime
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-         expire = datetime.utcnow() + expires_delta
-    else:
-         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-    try:
-         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-         user_id: str = payload.get("sub")
-         if user_id is None:
-             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
-         user = await db.get_user_by_id(UUID(user_id))
-         if user is None:
-             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-         return user
-    except jwt.PyJWTError:
-         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+    token_data = decode_access_token(token)
+    user_id: str = token_data.sub
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
+    user = await db.get_user_by_id(UUID(user_id))
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
 
 async def get_current_vault(authorization: str = Header(...)) -> Vault:
     if not authorization.startswith("Bearer "):
@@ -104,24 +87,21 @@ async def get_user_by_username(username: str) -> Optional[User]:
              return User(**row)
     return None
 
-# TODO: refactor to lifecycle methods
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await db.connect()
-
-@app.on_event("shutdown")
-async def shutdown():
+    yield
     await db.close()
 
+app = FastAPI(lifespan=lifespan)
 
 @app.post("/api/register", response_model=UserResponse, status_code=201)
 async def register(user_data: UserRegister):
-    # TODO: add password hashing mechanism
     new_user = User(
          id=uuid4(),
          username=user_data.username,
          email=user_data.email,
-         password_hash=user_data.password,  # !!! Для боевого применения: сохранить хеш пароля
+         password_hash=hash_password(user_data.password),
          created_at=datetime.utcnow(),
          updated_at=datetime.utcnow()
     )
@@ -131,10 +111,9 @@ async def register(user_data: UserRegister):
 @app.post("/api/login", response_model=TokenResponse)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = await get_user_by_username(form_data.username)
-    if not user or user.password_hash != form_data.password:
+    if not user or not verify_password(form_data.password, user.password_hash):
          raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": str(user.id)}, expires_delta=access_token_expires)
+    access_token = create_access_token(str(user.id))
     return TokenResponse(access_token=access_token)
 
 @app.get("/api/me", response_model=UserResponse)
@@ -143,9 +122,8 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 
 @app.get("/api/vaults", response_model=List[VaultResponse])
 async def list_vaults(current_user: User = Depends(get_current_user)):
-    async with db.pool.acquire() as conn:
-         rows = await conn.fetch("SELECT * FROM vaults WHERE user_id = $1", str(current_user.id))
-         return [Vault(**row) for row in rows]
+    vaults = await db.get_vaults_by_user(current_user.id)
+    return vaults
 
 @app.post("/api/vaults", response_model=VaultResponse, status_code=201)
 async def create_vault_endpoint(vault_data: VaultCreate, current_user: User = Depends(get_current_user)):
@@ -162,29 +140,23 @@ async def create_vault_endpoint(vault_data: VaultCreate, current_user: User = De
 
 @app.get("/api/vaults/{vault_id}", response_model=VaultResponse)
 async def get_vault(vault_id: UUID, current_user: User = Depends(get_current_user)):
-    async with db.pool.acquire() as conn:
-         row = await conn.fetchrow("SELECT * FROM vaults WHERE id = $1 AND user_id = $2", str(vault_id), str(current_user.id))
-         if not row:
-              raise HTTPException(status_code=404, detail="Vault not found")
-         return Vault(**row)
+    vault = await db.get_user_vault(vault_id, current_user.id)
+    if not vault:
+         raise HTTPException(status_code=404, detail="Vault not found")
+    return vault
 
 @app.put("/api/vaults/{vault_id}", response_model=VaultResponse)
 async def update_vault(vault_id: UUID, vault_data: VaultCreate, current_user: User = Depends(get_current_user)):
-    async with db.pool.acquire() as conn:
-         row = await conn.fetchrow(
-              "UPDATE vaults SET name = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *",
-              vault_data.name, str(vault_id), str(current_user.id)
-         )
-         if not row:
-              raise HTTPException(status_code=404, detail="Vault not found or not owned by user")
-         return Vault(**row)
+    vault = await db.update_vault(vault_id, vault_data.name, current_user.id)
+    if not vault:
+         raise HTTPException(status_code=404, detail="Vault not found or not owned by user")
+    return vault
 
 @app.delete("/api/vaults/{vault_id}", status_code=204)
 async def delete_vault(vault_id: UUID, current_user: User = Depends(get_current_user)):
-    async with db.pool.acquire() as conn:
-         result = await conn.execute("DELETE FROM vaults WHERE id = $1 AND user_id = $2", str(vault_id), str(current_user.id))
-         if result[-1] == "0":
-              raise HTTPException(status_code=404, detail="Vault not found or not owned by user")
+    deleted = await db.delete_vault(vault_id, current_user.id)
+    if not deleted:
+         raise HTTPException(status_code=404, detail="Vault not found or not owned by user")
     return
 
 @app.post("/api/notes", response_model=NoteResponse, status_code=201)
@@ -206,24 +178,12 @@ async def create_note_endpoint(note_data: NoteCreate, current_vault: Vault = Dep
 
 @app.get("/api/notes", response_model=List[NoteResponse])
 async def list_notes(state: Optional[str] = None, limit: int = 10, offset: int = 0, current_vault: Vault = Depends(get_current_vault)):
-    # TODO: extract to db.py
     if state is None:
-         async with db.pool.acquire() as conn:
-              rows = await conn.fetch(
-                  "SELECT * FROM notes WHERE vault_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3",
-                  str(current_vault.id), limit, offset
-              )
-              return [Note(**row) for row in rows]
-    elif state.upper() == "PENDING":
-         pending_notes = await db.get_pending_notes(current_vault.id, limit, offset)
-         return pending_notes
+         notes = await db.get_notes_by_vault(current_vault.id, limit, offset)
+         return notes
     else:
-         async with db.pool.acquire() as conn:
-              rows = await conn.fetch(
-                  "SELECT * FROM notes WHERE vault_id = $1 AND state = $2 ORDER BY created_at ASC LIMIT $3 OFFSET $4",
-                  str(current_vault.id), state.upper(), limit, offset
-              )
-              return [Note(**row) for row in rows]
+         notes = await db.get_notes_by_state(current_vault.id, state.upper(), limit, offset)
+         return notes
 
 @app.post("/api/notes/{note_id}/claim", response_model=NoteResponse)
 async def claim_note_endpoint(note_id: UUID, request: Request, current_vault: Vault = Depends(get_current_vault)):
@@ -238,12 +198,9 @@ async def claim_note_endpoint(note_id: UUID, request: Request, current_vault: Va
 
 @app.get("/api/notes/{note_id}/download", response_model=NoteResponse)
 async def download_note_endpoint(note_id: UUID, current_vault: Vault = Depends(get_current_vault)):
-    # TODO: HACK: CHATGPTWHY: wtf why download and then check for auth
     note = await db.download_note(note_id)
-    if not note:
+    if not note or str(note.vault_id) != str(current_vault.id):
          raise HTTPException(status_code=404, detail="Note not found")
-    if str(note.vault_id) != str(current_vault.id):
-         raise HTTPException(status_code=403, detail="Forbidden")
     return note
 
 @app.post("/api/notes/{note_id}/confirm", response_model=NoteResponse)

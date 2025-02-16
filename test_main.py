@@ -27,6 +27,7 @@ async def test_full_integration():
         assert r.status_code == 200, f"Login не прошёл: {r.text}"
         token_data = r.json()
         jwt_token = token_data["access_token"]
+        print(jwt_token)
         jwt_headers = {"Authorization": f"Bearer {jwt_token}"}
 
         # 3. Get user profile

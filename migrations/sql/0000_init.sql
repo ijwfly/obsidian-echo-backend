@@ -1,4 +1,4 @@
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   username TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL UNIQUE,
@@ -7,7 +7,7 @@ CREATE TABLE users (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE vaults (
+CREATE TABLE IF NOT EXISTS vaults (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -16,9 +16,15 @@ CREATE TABLE vaults (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TYPE note_state AS ENUM ('PENDING', 'CLAIMED', 'DELIVERED');
+DO $$
+BEGIN
+   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'note_state') THEN
+       CREATE TYPE note_state AS ENUM ('PENDING', 'CLAIMED', 'DELIVERED');
+   END IF;
+END
+$$;
 
-CREATE TABLE notes (
+CREATE TABLE IF NOT EXISTS notes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
   external_id TEXT,
@@ -31,9 +37,9 @@ CREATE TABLE notes (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_notes_vault_state ON notes(vault_id, state);
+CREATE INDEX IF NOT EXISTS idx_notes_vault_state ON notes(vault_id, state);
 
-CREATE TABLE delivery_logs (
+CREATE TABLE IF NOT EXISTS delivery_logs (
   id SERIAL PRIMARY KEY,
   note_id UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
   event_type TEXT NOT NULL,
@@ -42,9 +48,10 @@ CREATE TABLE delivery_logs (
   details JSONB
 );
 
-CREATE TABLE plugin_clients (
+CREATE TABLE IF NOT EXISTS plugin_clients (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   client_identifier TEXT NOT NULL,
   vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
   last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
