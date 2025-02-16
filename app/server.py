@@ -1,6 +1,8 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
+from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional, List
@@ -209,3 +211,10 @@ async def confirm_note_endpoint(note_id: UUID, current_vault: Vault = Depends(ge
     if not confirmed_note:
          raise HTTPException(status_code=409, detail="Note not in CLAIMED state or not found")
     return confirmed_note
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    file_path = os.path.join("static", "index.html")
+    with open(file_path, "r", encoding="utf-8") as f:
+        html_content = f.read()
+    return html_content
